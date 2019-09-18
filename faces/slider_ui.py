@@ -12,6 +12,7 @@ import PIL.ImageTk
 import pickle
 import keras
 import tensorflow as tf
+from scipy.spatial import KDTree
 
 IMAGE_WIDTH = 60
 IMAGE_HEIGHT = 60
@@ -26,76 +27,131 @@ print("Starting ...")
 def face_from_file(filename):
     return cv2.resize(cv2.cvtColor(cv2.imread(filename), cv2.COLOR_BGR2RGB), (IMAGE_WIDTH, IMAGE_HEIGHT)) / 255
 
+print('Loading faces...')
 faces_dir = 'photos/faces_pure/'
-scaled_faces_dict = {f: face_from_file(faces_dir + f) for f in os.listdir(faces_dir)}
-scaled_faces = np.array(list(scaled_faces_dict.values()))
+faces_names = os.listdir(faces_dir)
+scaled_faces = np.array([ face_from_file(faces_dir + f) for f in faces_names ])
 
-# Returns a triple: the loaded model, a data scaler, all encoded faces, and all decoded faces.
-def load_model(model_type):
-    if model_type == '-':
-        return None, scaled_faces, scaled_faces
-    elif model_type == 'PCA':
-        if not os.path.exists('pca.model'):
+
+# Class which takes care of a whole model and offers functions to encode and
+# decode data.
+class CModel:
+    def _after_init(self, encoded_faces_noscale):
+        # Scaler
+        self.scaler = sklearn.preprocessing.StandardScaler()
+        self.scaler.fit(encoded_faces_noscale)
+
+        # Encode & decode faces
+        self.encoded_faces = self.encode_more(scaled_faces)
+        self.decoded_faces = self.decode_more(self.encoded_faces)
+
+        # KD Tree
+        self.encoding_kd = KDTree(self.encoded_faces)
+
+    def encode(self, image):
+        return self.encode_more(image.reshape(1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)).reshape(ENC_SIZE)
+
+    def encode_more(self, images):
+        pass
+
+    def decode(self, encoding):
+        return self.decode_more(encoding.reshape(1, ENC_SIZE)).reshape(IMAGE_WIDTH, IMAGE_HEIGHT, 3)
+
+    def decode_more(self, encodings):
+        pass
+
+    def closest_match(self, encoding):
+        d, i = self.encoding_kd.query(encoding)
+        return faces_names[i], self.encoded_faces[i]
+
+    def create_model(model_type):
+        return {
+            '-': NoModel,
+            'PCA': PCAModel,
+            'Deep NN': DenseModel,
+            'Convolutional NN': ConvoModel
+        }[model_type]()
+
+
+class NoModel(CModel):
+    def encode_more(self, images):
+        return np.zeros((images.shape[0], ENC_SIZE))
+
+    def decode_more(self, encodings):
+        return np.zeros((encodings.shape[0], IMAGE_WIDTH, IMAGE_HEIGHT, 3), dtype=np.uint8)
+
+class PCAModel(CModel):
+    def __init__(self):
+        if not os.path.exists('data/pca.model'):
             pca = sklearn.decomposition.PCA(n_components=ENC_SIZE)
             pca.fit(scaled_faces.reshape(-1, IMAGE_WIDTH*IMAGE_HEIGHT*3))
             with open('data/pca.model', 'wb') as f:
                 f.write(pickle.dumps(pca))
         with open('data/pca.model', 'rb') as f:
-            pca = pickle.loads(f.read())
-        encoded_faces = pca.transform(scaled_faces.reshape(-1, IMAGE_WIDTH*IMAGE_HEIGHT*3))
-        decoded_faces = pca.inverse_transform(encoded_faces).reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)
-        scaler = sklearn.preprocessing.StandardScaler()
-        scaler.fit(encoded_faces)
-        return pca, scaler, encoded_faces, decoded_faces
-    elif model_type == 'Deep NN':
-        encoder = keras.models.load_model('data/deep_encoder60.keras')
-        decoder = keras.models.load_model('data/deep_decoder60.keras')
-        encoded_faces = encoder.predict(scaled_faces.reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3))
-        decoded_faces = decoder.predict(encoded_faces).reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)
-        scaler = sklearn.preprocessing.StandardScaler()
-        scaler.fit(encoded_faces)
-        return (encoder, decoder), scaler, encoded_faces, decoded_faces
-    elif model_type == 'Convolutional NN':
-        encoder = keras.models.load_model('data/convo_encoder60.keras')
-        decoder = keras.models.load_model('data/convo_decoder60.keras')
-        encoded_faces = encoder.predict(scaled_faces.reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3))
-        decoded_faces = decoder.predict(encoded_faces).reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)
-        scaler = sklearn.preprocessing.StandardScaler()
-        scaler.fit(encoded_faces)
-        return (encoder, decoder), scaler, encoded_faces, decoded_faces
+            self.pca = pickle.loads(f.read())
 
-def encode_image(image, model_type):
-    if model_type == '-':
-        return np.zeros(ENC_SIZE, dtype=np.uint8)
-    elif model_type == 'PCA':
-        raw = pca_scaler.transform(pca.transform(image.reshape(-1, IMAGE_WIDTH * IMAGE_HEIGHT * 3)))
-    elif model_type == 'Deep NN':
-        raw = deep_scaler.transform(deep_encoder.predict(image.reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)))
-    elif model_type == 'Convolutional NN':
-        raw = convo_scaler.transform(convo_encoder.predict(image.reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)))
-    return np.clip(raw, -1, 1).reshape(ENC_SIZE)
+        self._after_init(self.pca.transform(scaled_faces.reshape(-1, IMAGE_WIDTH*IMAGE_HEIGHT*3)))
 
-# Returns the decoded image as size IMAGE_WIDTH x IMAGE_HEIGHT in uint8 encoding.
-def decode_image(encoding, model_type):
-    if model_type == '-':
-        return np.zeros((IMAGE_WIDTH, IMAGE_HEIGHT, 3), dtype=np.uint8)
-    elif model_type == 'PCA':
-        raw = pca.inverse_transform(pca_scaler.inverse_transform(encoding))
-        return np.clip(raw*255, 0, 255).astype(np.uint8).reshape(IMAGE_WIDTH, IMAGE_HEIGHT, 3)
-    elif model_type == 'Deep NN':
-        raw = deep_decoder.predict(deep_scaler.inverse_transform(encoding).reshape(-1, ENC_SIZE))
-        return np.clip(raw*255, 0, 255).astype(np.uint8).reshape(IMAGE_WIDTH, IMAGE_HEIGHT, 3)
-    elif model_type == 'Convolutional NN':
-        raw = convo_decoder.predict(convo_scaler.inverse_transform(encoding).reshape(-1, ENC_SIZE))
-        return np.clip(raw*255, 0, 255).astype(np.uint8).reshape(IMAGE_WIDTH, IMAGE_HEIGHT, 3)
+    def encode_more(self, images):
+        raw = self.scaler.transform(self.pca.transform(images.reshape(-1, IMAGE_WIDTH*IMAGE_HEIGHT*3)))
+        return np.clip(raw, -1, 1)
+
+    def decode_more(self, encodings):
+        raw = self.pca.inverse_transform(self.scaler.inverse_transform(encodings))
+        return np.clip(raw*255, 0, 255).astype(np.uint8).reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)
 
 
-pca, pca_scaler, pca_encoded_faces, pca_decoded_faces = load_model('PCA')
-deep_nn, deep_scaler, deep_encoded_faces, deep_decoded_faces = load_model('Deep NN')
-deep_encoder, deep_decoder = deep_nn
-convo_nn, convo_scaler, convo_encoded_faces, convo_decoded_faces = load_model('Convolutional NN')
-convo_encoder, convo_decoder = convo_nn
+class NNModel(CModel):
+    def _load_encoder_decoder(self):
+        pass
 
+    def __init__(self):
+        self.encoder, self.decoder = self._load_encoder_decoder()
+        self._after_init(self.encoder.predict(scaled_faces))
+
+    def encode_more(self, images):
+        raw = self.scaler.transform(self.encoder.predict(images))
+        return np.clip(raw, -1, 1).reshape(-1, ENC_SIZE)
+
+    def decode_more(self, encodings):
+        raw = self.decoder.predict(self.scaler.inverse_transform(encodings))
+        return np.clip(raw*255, 0, 255).astype(np.uint8).reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)
+
+
+class PCANNModel(NNModel):
+    def __init__(self):
+        self.encoder, self.decoder = self._load_encoder_decoder()
+        self.pca = sklearn.decomposition.PCA(n_components=ENC_SIZE)
+        enc_faces = self.encoder.predict(scaled_faces)
+        self.pca.fit(enc_faces)
+
+        self._after_init(self.pca.transform(enc_faces))
+
+    def encode_more(self, images):
+        raw = self.scaler.transform(self.pca.transform(self.encoder.predict(images)))
+        return np.clip(raw, -1, 1).reshape(-1, ENC_SIZE)
+
+    def decode_more(self, encodings):
+        raw = self.decoder.predict(self.pca.inverse_transform(self.scaler.inverse_transform(encodings)))
+        return np.clip(raw*255, 0, 255).astype(np.uint8).reshape(-1, IMAGE_WIDTH, IMAGE_HEIGHT, 3)
+
+
+class DenseModel(PCANNModel):
+    def _load_encoder_decoder(self):
+        return keras.models.load_model('data/deep_encoder60.keras'), keras.models.load_model('data/deep_decoder60.keras')
+
+
+class ConvoModel(PCANNModel):
+    def _load_encoder_decoder(self):
+        return keras.models.load_model('data/convo_encoder60.keras'), keras.models.load_model('data/convo_decoder60.keras')
+
+
+
+print('Loading models...')
+models = {x: CModel.create_model(x) for x in MODEL_TYPES}
+
+
+print('Creating UI...')
 
 # Create window.
 window = tk.Tk()
@@ -152,16 +208,35 @@ model_combobox.pack(side=tk.TOP)
 # Combined image.
 image_canvas = tk.Canvas(window_frame_mid, width=300, height=300)
 canvas_image = None
+image_canvas.pack(side=tk.TOP)
+
+# Best Match image.
+match_canvas = tk.Canvas(window_frame_mid, width=300, height=300)
+match_image = None
+match_canvas.pack(side=tk.TOP)
+
 
 def update_canvas(parameters):
+    encoding = np.array(parameters, dtype=np.float64)
+
+    # Update shown image
     global canvas_image
-    img = decode_image(np.array(parameters, dtype=np.float64), current_model_type)
+    img = models[current_model_type].decode(encoding)
     img = cv2.resize(img, (300, 300))
     canvas_image = PIL.ImageTk.PhotoImage(image=PIL.Image.fromarray(img))
     image_canvas.create_image(0, 0, image=canvas_image, anchor=tk.NW)
 
+    # Update closest match
+    global match_image
+    if current_model_type != '-':
+        match_name, match_enc = models[current_model_type].closest_match(encoding)
+        print(match_name)
+        img = (face_from_file(faces_dir + match_name) * 255).astype(np.uint8)
+        img = cv2.resize(img, (300, 300))
+        match_image = PIL.ImageTk.PhotoImage(image=PIL.Image.fromarray(img))
+        match_canvas.create_image(0, 0, image=match_image, anchor=tk.NW)
+
 update_canvas(slider_values)
-image_canvas.pack(side=tk.TOP)
 
 # Search field and button.
 search_text = tk.Text(window_frame_right, height=1, width=50)
@@ -171,7 +246,7 @@ def search():
     raw_text = search_text.get(0.0, tk.END).replace("\n", '').replace(' ', '-').lower() + '-image.jpg'
     filename = faces_dir + raw_text
     img = face_from_file(filename)
-    encoding = encode_image(img, current_model_type)
+    encoding = models[current_model_type].encode(img)
     for x, sl in zip(encoding, sliders_list):
         sl.set(x)
 
