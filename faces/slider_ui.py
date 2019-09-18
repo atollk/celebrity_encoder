@@ -13,6 +13,7 @@ import pickle
 import keras
 import tensorflow as tf
 from scipy.spatial import KDTree
+import random
 
 IMAGE_WIDTH = 60
 IMAGE_HEIGHT = 60
@@ -230,20 +231,27 @@ def update_canvas(parameters):
     global match_image
     if current_model_type != '-':
         match_name, match_enc = models[current_model_type].closest_match(encoding)
-        print(match_name)
         img = (face_from_file(faces_dir + match_name) * 255).astype(np.uint8)
         img = cv2.resize(img, (300, 300))
         match_image = PIL.ImageTk.PhotoImage(image=PIL.Image.fromarray(img))
         match_canvas.create_image(0, 0, image=match_image, anchor=tk.NW)
 
+        label_name = ' '.join(reversed(match_name.replace('-image.jpg', '').split('-'))).title()
+        best_match_label.config(text="Are you {}?".format(label_name))
+
 update_canvas(slider_values)
 
+# Best match text.
+best_match_label = tk.Label(window_frame_mid)
+best_match_label.pack()
+
 # Search field and button.
-search_text = tk.Text(window_frame_right, height=1, width=50)
+search_text_variable = tk.StringVar()
+search_text = tk.Entry(window_frame_right, textvariable=search_text_variable)
 search_text.pack()
 
 def search():
-    raw_text = search_text.get(0.0, tk.END).replace("\n", '').replace(' ', '-').lower() + '-image.jpg'
+    raw_text = search_text_variable.get().replace("\n", '').replace(' ', '-').lower() + '-image.jpg'
     filename = faces_dir + raw_text
     img = face_from_file(filename)
     encoding = models[current_model_type].encode(img)
@@ -252,6 +260,15 @@ def search():
 
 search_button = tk.Button(window_frame_right, text="Search Celebrity", command=search)
 search_button.pack()
+
+# Randomizer Button
+def random_celeb():
+    name = random.choice(faces_names).replace('-image.jpg', '').replace('-', ' ')
+    search_text_variable.set(name)
+    search()
+
+random_celeb_button = tk.Button(window_frame_right, text="Random Celebrity", command=random_celeb)
+random_celeb_button.pack()
 
 print('Ready')
 
